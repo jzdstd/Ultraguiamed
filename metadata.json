@@ -1,0 +1,6 @@
+{
+  "name": "Ultramed - Consulta de Medicamentos",
+  "description": "Sistema de consulta rápida de localização de medicamentos, prateleiras e informações para atendentes da Farmácia Ultramed.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

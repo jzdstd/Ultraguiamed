@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leitor de receita (grátis) – Ultramed</title>
+<style>
+:root{--az:#0b4ea2;--vm:#d62828;--bd:#d5deea;--bg:#f4f7fb;--tx:#12263f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{background:var(--az);color:#fff;padding:16px 20px;border-bottom:5px solid var(--vm)}
+header h1{margin:0;font-size:22px}header p{margin:4px 0 0;font-size:14px;opacity:.9}
+main{max-width:1100px;margin:0 auto;padding:16px;display:grid;gap:16px}
+@media(min-width:860px){main{grid-template-columns:360px 1fr}}
+.card{background:#fff;border:1px solid var(--bd);border-radius:12px;padding:14px}
+h2{margin:0 0 10px;font-size:16px;color:var(--az)}
+.btn{display:block;width:100%;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:700;cursor:pointer;background:var(--az);color:#fff;margin-bottom:8px}
+.btn.vm{background:var(--vm)}.btn.sec{background:#fff;color:var(--az);border:2px solid var(--az)}
+.btn:disabled{opacity:.5;cursor:default}
+img{width:100%;max-height:420px;object-fit:contain;border:1px solid var(--bd);border-radius:8px;display:none;margin-bottom:10px;background:#000}
+textarea{width:100%;min-height:340px;padding:10px;border:1px solid var(--bd);border-radius:8px;font-size:15px;font-family:inherit;line-height:1.4}
+#st{font-weight:700;margin:6px 0;min-height:22px}
+.bar{height:10px;background:#e3eaf4;border-radius:6px;overflow:hidden;display:none;margin-bottom:8px}
+.bar i{display:block;height:100%;width:0;background:var(--vm)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chip{border:1px solid var(--az);background:#fff;color:var(--az);border-radius:20px;padding:6px 12px;font-size:14px;cursor:pointer}
+.av{font-size:13px;color:#5b6b80;line-height:1.4}
+label.o{display:flex;gap:8px;align-items:center;font-size:14px;margin-bottom:10px}
+</style>
+</head>
+<body>
+<header><h1>Leitor de receita (grátis)</h1><p>Assistente Ultramed – lê o texto da receita e deixa pronto para copiar</p></header>
+<main>
+<section class="card">
+<h2>1. Foto da receita</h2>
+<input type="file" id="cam" accept="image/*" capture="environment" hidden>
+<input type="file" id="arq" accept="image/*" hidden>
+<button class="btn" id="bCam">📷 Tirar foto</button>
+<button class="btn sec" id="bArq">📁 Escolher imagem</button>
+<img id="prev" alt="Receita">
+<label class="o"><input type="checkbox" id="melhor" checked> Melhorar a imagem (preto e branco, mais contraste)</label>
+<button class="btn vm" id="bLer" disabled>Ler receita</button>
+<button class="btn sec" id="bLimpar">Limpar tudo</button>
+<div class="bar" id="bar"><i id="barI"></i></div>
+<div id="st"></div>
+<p class="av">Funciona de graça e a foto <b>não sai do seu aparelho</b>. Lê bem receita <b>digitada/impressa</b>. Letra à mão costuma sair errada: sempre confira com a foto. Tire a foto de frente, com boa luz, sem sombra e com a receita ocupando a tela.</p>
+</section>
+<section class="card">
+<h2>2. Texto lido</h2>
+<button class="btn" id="bCop" disabled>Copiar texto completo</button>
+<div id="ch" class="chips"></div>
+<textarea id="txt" placeholder="O texto da receita aparece aqui. Você pode corrigir antes de copiar."></textarea>
+</section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+var $=function(i){return document.getElementById(i)};
+var img=null;
+function st(t,e){var s=$("st");s.textContent=t;s.style.color=e?"#d62828":""}
+function pick(f){
+ if(!f)return;var u=URL.createObjectURL(f);var im=new Image();
+ im.onload=function(){img=im;var p=$("prev");p.src=u;p.style.display="block";$("bLer").disabled=false;st("")};
+ im.onerror=function(){st("Não consegui abrir essa imagem.",true)};im.src=u;
+}
+$("bCam").onclick=function(){$("cam").click()};
+$("bArq").onclick=function(){$("arq").click()};
+$("cam").onchange=function(e){pick(e.target.files[0]);e.target.value=""};
+$("arq").onchange=function(e){pick(e.target.files[0]);e.target.value=""};
+function preparar(){
+ var m=2200,s=Math.min(2,m/Math.max(img.width,img.height));
+ var c=document.createElement("canvas");c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
+ var x=c.getContext("2d");x.drawImage(img,0,0,c.width,c.height);
+ if($("melhor").checked){
+  var d=x.getImageData(0,0,c.width,c.height),a=d.data,n=a.length/4,sum=0,i,g;
+  for(i=0;i<a.length;i+=4){g=0.299*a[i]+0.587*a[i+1]+0.114*a[i+2];a[i]=a[i+1]=a[i+2]=g;sum+=g}
+  var mean=sum/n;
+  for(i=0;i<a.length;i+=4){g=(a[i]-mean)*1.6+mean+20;g=g<0?0:g>255?255:g;a[i]=a[i+1]=a[i+2]=g}
+  x.putImageData(d,0,0);
+ }
+ return c;
+}
+$("bLer").onclick=async function(){
+ if(!img)return;var b=$("bLer");b.disabled=true;
+ var bar=$("bar"),bi=$("barI");bar.style.display="block";bi.style.width="0";
+ st("Carregando o leitor… na primeira vez demora um pouco (precisa de internet).");
+ var w=null;
+ try{
+  if(typeof Tesseract==="undefined")throw new Error("lib");
+  w=await Tesseract.createWorker("por",1,{logger:function(m){
+   if(m.status==="recognizing text"){bi.style.width=Math.round(m.progress*100)+"%";st("Lendo… "+Math.round(m.progress*100)+"%")}
+   else if(m.status){st("Preparando… ("+m.status+")")}
+  }});
+  var r=await w.recognize(preparar());
+  var t=(r.data.text||"").replace(/[ \t]+\n/g,"\n").replace(/\n{3,}/g,"\n\n").trim();
+  $("txt").value=t;$("bCop").disabled=!t;achar(t);
+  st(t?"Pronto. Confira o texto com a foto.":"Não consegui ler texto. Tente outra foto, mais nítida.",!t);
+ }catch(e){
+  st(e&&e.message==="lib"?"Não consegui carregar o leitor. Verifique a internet e recarregue a página.":"Erro ao ler a receita. Tente outra foto.",true);
+ }
+ if(w){try{await w.terminate()}catch(e){}}
+ bar.style.display="none";b.disabled=false;
+};
+function achar(t){
+ var box=$("ch");box.innerHTML="";var vistos={};
+ function add(rot,v){v=v.trim();if(!v||vistos[rot+v])return;vistos[rot+v]=1;
+  var c=document.createElement("button");c.className="chip";c.textContent=rot+": "+v;c.onclick=function(){cop(v,c,rot+": "+v)};box.appendChild(c)}
+ var re=/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b/g,m;
+ while((m=re.exec(t)))add("Data",m[0]);
+ re=/\b(CRM|CRO|CRMV|CRF)[\s\-\/:]*([A-Z]{2})?[\s\-\/:nº°.]*(\d{3,7})\b/gi;
+ while((m=re.exec(t)))add("Conselho",m[0].replace(/\s+/g," "));
+ re=/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g;
+ while((m=re.exec(t)))add("CPF",m[0]);
+}
+function leg(t){var a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();try{document.execCommand("copy")}catch(e){}a.remove()}
+function cop(t,b,rot){
+ var f=function(){var o=b.textContent;b.textContent="✓ Copiado";setTimeout(function(){b.textContent=rot||o},1200)};
+ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(f,function(){leg(t);f()})}else{leg(t);f()}
+}
+$("bCop").onclick=function(){var b=$("bCop");var o="Copiar texto completo";cop($("txt").value,b,o)};
+$("bLimpar").onclick=function(){
+ img=null;var p=$("prev");p.removeAttribute("src");p.style.display="none";
+ $("txt").value="";$("ch").innerHTML="";$("bLer").disabled=true;$("bCop").disabled=true;st("");
+};
+</script>
+</body>
+</html>
