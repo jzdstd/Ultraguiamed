@@ -1,10 +1,15 @@
-export interface AuthStatusResponse {
-  configured: boolean;
-  authenticated: boolean;
-  username?: string;
-  expiresAt?: string;
-  cookieBlocked?: boolean;
-}
+import {
+  browserSessionPersistence,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  setPersistence,
+  signInWithEmailAndPassword,
+  signOut,
+  type User,
+} from 'firebase/auth';
+import { auth, isFirebaseConfigured } from './firebase';
+
+export const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos sem atividade
 
 export interface AdminAuditEntry {
   id: string;
@@ -16,8 +21,7 @@ export interface AdminAuditEntry {
 
 export interface AdminOverviewResponse {
   username: string;
-  expiresAt?: string;
-  stats: {
+  stats?: {
     totalProdutos: number;
     comLocalizacao: number;
     semLocalizacao: number;
@@ -25,121 +29,169 @@ export interface AdminOverviewResponse {
     totalFileiras: number;
   };
   auditLogs: AdminAuditEntry[];
+  backendAvailable: boolean;
 }
 
-export async function getAuthStatus(): Promise<AuthStatusResponse> {
-  const res = await fetch('/api/auth/status', {
-    method: 'GET',
-    credentials: 'include',
-    cache: 'no-store',
-  });
-  if (!res.ok) {
-    throw new Error('Não foi possível verificar a sessão administrativa.');
+function getFirebaseErrorCode(err: unknown): string {
+  if (err && typeof err === 'object' && 'code' in err) {
+    return String((err as { code?: unknown }).code || '');
   }
-  return res.json();
+  return '';
 }
 
-export async function setupInitialAdminAccount(
-  username: string,
+function mapFirebaseLoginError(err: unknown): string {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return 'Sem internet';
+  }
+  const code = getFirebaseErrorCode(err);
+  switch (code) {
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+    case 'auth/invalid-email':
+    case 'auth/user-disabled':
+      return 'E-mail ou senha incorretos';
+    case 'auth/too-many-requests':
+      return 'Muitas tentativas, aguarde alguns minutos';
+    case 'auth/network-request-failed':
+      return 'Sem internet';
+    case 'auth/operation-not-allowed':
+      return 'Login por e-mail e senha não está ativado no Firebase.';
+    default:
+      return 'E-mail ou senha incorretos';
+  }
+}
+
+export function subscribeToAdminAuth(
+  callback: (user: User | null) => void
+): () => void {
+  if (!isFirebaseConfigured || !auth) {
+    callback(null);
+    return () => {};
+  }
+  return onAuthStateChanged(auth, callback);
+}
+
+export async function loginAdminWithEmail(
+  email: string,
   password: string
-): Promise<AuthStatusResponse> {
-  const res = await fetch('/api/auth/setup', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || 'Erro ao configurar conta administrativa.');
+): Promise<User> {
+  if (!isFirebaseConfigured || !auth) {
+    throw new Error(
+      'Configuração do Firebase ausente. Cadastre as variáveis VITE_FIREBASE_* no ambiente.'
+    );
+  }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('Sem internet');
   }
 
-  // Verify the HttpOnly session cookie persisted cleanly
-  const verified = await getAuthStatus().catch(() => null);
-  if (verified && !verified.authenticated) {
-    return { ...data, authenticated: false, cookieBlocked: true };
-  }
-  return data;
-}
-
-export async function loginAdminAccount(
-  username: string,
-  password: string
-): Promise<AuthStatusResponse> {
-  const res = await fetch('/api/auth/login', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || 'Usuário ou senha inválidos.');
+  const cleanEmail = email.trim();
+  if (!cleanEmail || !password) {
+    throw new Error('E-mail ou senha incorretos');
   }
 
-  // Verify the HttpOnly session cookie persisted cleanly
-  const verified = await getAuthStatus().catch(() => null);
-  if (verified && !verified.authenticated) {
-    return { ...data, authenticated: false, cookieBlocked: true };
-  }
-  return data;
-}
-
-export async function keepAliveAdminSession(): Promise<boolean> {
   try {
-    const res = await fetch('/api/auth/keepalive', {
-      method: 'POST',
-      credentials: 'include',
-      cache: 'no-store',
-    });
-    return res.ok;
-  } catch {
-    return false;
+    await setPersistence(auth, browserSessionPersistence);
+    const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+    return cred.user;
+  } catch (err) {
+    throw new Error(mapFirebaseLoginError(err));
   }
+}
+
+export async function sendAdminPasswordReset(email: string): Promise<string> {
+  if (!isFirebaseConfigured || !auth) {
+    throw new Error(
+      'Configuração do Firebase ausente. Cadastre as variáveis VITE_FIREBASE_* no ambiente.'
+    );
+  }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('Sem internet');
+  }
+
+  const cleanEmail = email.trim();
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    throw new Error('Digite um e-mail válido para enviar a redefinição de senha.');
+  }
+
+  try {
+    await sendPasswordResetEmail(auth, cleanEmail);
+  } catch (err) {
+    const code = getFirebaseErrorCode(err);
+    if (code === 'auth/too-many-requests') {
+      throw new Error('Muitas tentativas, aguarde alguns minutos');
+    }
+    if (code === 'auth/network-request-failed') {
+      throw new Error('Sem internet');
+    }
+    if (code === 'auth/invalid-email') {
+      throw new Error('Digite um e-mail válido para enviar a redefinição de senha.');
+    }
+    // Never reveal if an email exists when user-not-found is returned
+  }
+
+  return 'Se este e-mail estiver cadastrado como administrador, você receberá um link para redefinir a senha.';
 }
 
 export async function logoutAdminAccount(): Promise<void> {
-  await fetch('/api/auth/logout', {
-    method: 'POST',
-    credentials: 'include',
-  }).catch(() => undefined);
+  if (!auth) return;
+  try {
+    await signOut(auth);
+  } catch (err) {
+    console.warn('Erro ao encerrar sessão do Firebase:', err);
+  }
+}
+
+export async function getCurrentFirebaseIdToken(): Promise<string | null> {
+  if (!auth?.currentUser) return null;
+  try {
+    return await auth.currentUser.getIdToken();
+  } catch {
+    return null;
+  }
 }
 
 export async function getAdminOverview(): Promise<AdminOverviewResponse> {
-  const res = await fetch('/api/admin/overview', {
-    method: 'GET',
-    credentials: 'include',
-    cache: 'no-store',
-  });
-  if (res.status === 401) {
+  const token = await getCurrentFirebaseIdToken();
+  if (!token) {
     throw new Error('AUTH_REQUIRED');
   }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Erro ao carregar dados administrativos.');
-  }
-  return res.json();
-}
 
-export async function updateAdminCredentials(params: {
-  currentPassword: string;
-  newUsername: string;
-  newPassword?: string;
-}): Promise<{ ok: boolean; username: string; message: string }> {
-  const res = await fetch('/api/admin/account/credentials', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  });
-  if (res.status === 401) {
-    throw new Error('AUTH_REQUIRED');
+  try {
+    const res = await fetch('/api/admin/overview', {
+      method: 'GET',
+      cache: 'no-store',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (res.status === 401) {
+      throw new Error('AUTH_REQUIRED');
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.ok || !contentType.includes('application/json')) {
+      return {
+        username: auth?.currentUser?.email || 'Administrador',
+        auditLogs: [],
+        backendAvailable: false,
+      };
+    }
+
+    const data = await res.json();
+    return {
+      ...data,
+      backendAvailable: true,
+    };
+  } catch (err) {
+    if (err instanceof Error && err.message === 'AUTH_REQUIRED') {
+      throw err;
+    }
+    return {
+      username: auth?.currentUser?.email || 'Administrador',
+      auditLogs: [],
+      backendAvailable: false,
+    };
   }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || 'Não foi possível atualizar usuário e senha.');
-  }
-  return data;
 }

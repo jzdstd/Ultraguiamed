@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import type { User } from 'firebase/auth';
 import {
   Header,
   ActiveTab,
@@ -19,9 +20,9 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 import { ProdutoComLocalizacoes } from './types/database';
 import { db } from './services/db';
 import {
-  getAuthStatus,
-  keepAliveAdminSession,
+  INACTIVITY_TIMEOUT_MS,
   logoutAdminAccount,
+  subscribeToAdminAuth,
 } from './services/auth';
 import { Star, Clock, AlertTriangle } from 'lucide-react';
 
@@ -47,12 +48,14 @@ export default function App() {
     return localStorage.getItem('ultramed_theme_mode') === 'dark';
   });
 
-  // Admin authentication & protected URL gate state
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
-  const [isAdminConfigured, setIsAdminConfigured] = useState(true);
+  // Firebase Admin authentication & protected URL gate state
+  const [adminUser, setAdminUser] = useState<User | null>(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
-  const [adminUsername, setAdminUsername] = useState('');
+  const [inactivityMessage, setInactivityMessage] = useState('');
   const [showAdminModal, setShowAdminModal] = useState(() => isDirectAdminUrl());
+  const lastActivityRef = useRef<number>(Date.now());
+
+  const isAdminLoggedIn = Boolean(adminUser);
 
   // Search & Filter state
   const [searchQuery, setSearchQuery] = useState('');
@@ -81,7 +84,7 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  // Hydrate catalog from backend & verify active admin session on load
+  // Hydrate catalog from backend & listen to Firebase Auth state via onAuthStateChanged
   useEffect(() => {
     let active = true;
 
@@ -91,20 +94,15 @@ export default function App() {
       }
     });
 
-    getAuthStatus()
-      .then((status) => {
-        if (!active) return;
-        setIsAdminConfigured(status.configured);
-        setIsAdminLoggedIn(Boolean(status.authenticated));
-        setAdminUsername(status.username || '');
-      })
-      .catch(() => {
-        if (!active) return;
-        setIsAdminLoggedIn(false);
-      })
-      .finally(() => {
-        if (active) setIsCheckingAuth(false);
-      });
+    const unsubscribeAuth = subscribeToAdminAuth((user) => {
+      if (!active) return;
+      setAdminUser(user);
+      setIsCheckingAuth(false);
+      if (user) {
+        lastActivityRef.current = Date.now();
+        setInactivityMessage('');
+      }
+    });
 
     const handleUrlChange = () => {
       if (isDirectAdminUrl()) {
@@ -116,38 +114,57 @@ export default function App() {
     window.addEventListener('hashchange', handleUrlChange);
     return () => {
       active = false;
+      unsubscribeAuth();
       window.removeEventListener('popstate', handleUrlChange);
       window.removeEventListener('hashchange', handleUrlChange);
     };
   }, []);
 
-  // Keep admin session active while using the panel
+  // Auto-logout after 30 minutes of inactivity on shared counter computers
   useEffect(() => {
-    if (!isAdminLoggedIn) return;
-    const intervalId = window.setInterval(async () => {
-      const alive = await keepAliveAdminSession();
-      if (!alive) {
-        setIsAdminLoggedIn(false);
-        setAdminUsername('');
-      }
-    }, 4 * 60 * 1000);
+    if (!adminUser) return;
 
-    return () => window.clearInterval(intervalId);
-  }, [isAdminLoggedIn]);
+    lastActivityRef.current = Date.now();
+
+    const updateActivity = () => {
+      lastActivityRef.current = Date.now();
+    };
+
+    const events: Array<keyof WindowEventMap> = [
+      'mousemove',
+      'mousedown',
+      'keydown',
+      'touchstart',
+      'scroll',
+      'click',
+    ];
+
+    events.forEach((evt) => {
+      window.addEventListener(evt, updateActivity, { passive: true });
+    });
+
+    const intervalId = window.setInterval(async () => {
+      if (Date.now() - lastActivityRef.current >= INACTIVITY_TIMEOUT_MS) {
+        setInactivityMessage(
+          'Sessão encerrada automaticamente após 30 minutos sem atividade.'
+        );
+        await logoutAdminAccount();
+      }
+    }, 15_000);
+
+    return () => {
+      events.forEach((evt) => {
+        window.removeEventListener(evt, updateActivity);
+      });
+      window.clearInterval(intervalId);
+    };
+  }, [adminUser]);
 
   const openAdminArea = () => {
     setShowAdminModal(true);
     if (!isDirectAdminUrl()) {
       window.history.pushState({}, '', '/admin');
     }
-    // Refresh auth status when opening Admin so expired sessions are immediately caught
-    getAuthStatus()
-      .then((status) => {
-        setIsAdminConfigured(status.configured);
-        setIsAdminLoggedIn(Boolean(status.authenticated));
-        setAdminUsername(status.username || '');
-      })
-      .catch(() => undefined);
   };
 
   const closeAdminArea = () => {
@@ -158,9 +175,8 @@ export default function App() {
   };
 
   const handleAdminLogout = async () => {
+    setInactivityMessage('');
     await logoutAdminAccount();
-    setIsAdminLoggedIn(false);
-    setAdminUsername('');
     setShowAdminModal(false);
     if (isDirectAdminUrl()) {
       window.history.replaceState({}, '', '/');
@@ -540,34 +556,30 @@ export default function App() {
         />
       )}
 
-      {/* Protected Admin Access Gate (only shows login/setup when unauthenticated) */}
+      {/* Protected Admin Access Gate (always shown while checking auth or unauthenticated) */}
       {showAdminModal && (!isAdminLoggedIn || isCheckingAuth) && (
         <AdminAuthGate
           isOpen={showAdminModal}
           isCheckingAuth={isCheckingAuth}
-          isConfigured={isAdminConfigured}
+          inactivityMessage={inactivityMessage}
           onClose={closeAdminArea}
-          onAuthenticated={(username) => {
-            setIsAdminConfigured(true);
-            setIsAdminLoggedIn(true);
-            setAdminUsername(username);
+          onAuthenticated={() => {
+            setInactivityMessage('');
             db.syncFromServer().then(() => refreshData());
           }}
         />
       )}
 
-      {/* Authenticated Admin Panel (never mounted unless backend session is valid) */}
-      {showAdminModal && isAdminLoggedIn && !isCheckingAuth && (
+      {/* Authenticated Admin Panel (never mounted unless Firebase user is logged in) */}
+      {showAdminModal && isAdminLoggedIn && !isCheckingAuth && adminUser && (
         <AdminPanel
           isOpen={showAdminModal}
           onClose={closeAdminArea}
-          adminUsername={adminUsername}
+          adminEmail={adminUser.email || adminUser.uid}
           onLogout={handleAdminLogout}
           onSessionExpired={() => {
-            setIsAdminLoggedIn(false);
-            setAdminUsername('');
+            logoutAdminAccount();
           }}
-          onUsernameChanged={(nextUser) => setAdminUsername(nextUser)}
           onRefreshData={refreshData}
         />
       )}

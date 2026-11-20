@@ -11,6 +11,7 @@ import {
 } from '../types/database';
 import { getInitialSeedData } from '../data/seedData';
 import {
+  complementarListaSemSobrescrever,
   complementarProdutoSeguro,
   computeVerificationStatus,
   getCamposFaltantesAudit,
@@ -18,6 +19,7 @@ import {
   NAO_VERIFICADO,
 } from '../data/medicationEnrichment';
 import { applyCatalogUpdates2026 } from '../data/catalogMigration2026';
+import { getCurrentFirebaseIdToken } from './auth';
 
 export { getCamposFaltantesAudit, isUnconfirmedValue, NAO_VERIFICADO };
 
@@ -1140,7 +1142,8 @@ class DatabaseService {
         method: 'GET',
         cache: 'no-store',
       });
-      if (!res.ok) return false;
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) return false;
       const snapshot = await res.json();
       this.applyServerSnapshot(snapshot);
       return true;
@@ -1152,82 +1155,127 @@ class DatabaseService {
   private async adminRequest<T = any>(
     url: string,
     options: RequestInit = {}
-  ): Promise<T> {
-    const res = await fetch(url, {
-      ...options,
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers || {}),
-      },
-    });
-    if (res.status === 401) {
+  ): Promise<T | null> {
+    const token = await getCurrentFirebaseIdToken();
+    if (!token) {
       throw new Error('AUTH_REQUIRED');
     }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.error || 'Erro ao executar operação administrativa.');
+
+    try {
+      const res = await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          ...(options.headers || {}),
+        },
+      });
+      if (res.status === 401) {
+        throw new Error('AUTH_REQUIRED');
+      }
+      const contentType = res.headers.get('content-type') || '';
+      // On static hosts (e.g. Netlify SPA fallback returning text/html or 404), fall back cleanly to local store
+      if (res.status === 404 || !contentType.includes('application/json')) {
+        return null;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao executar operação administrativa.');
+      }
+      if (data.snapshot) {
+        this.applyServerSnapshot(data.snapshot);
+      }
+      return data as T;
+    } catch (err) {
+      if (err instanceof Error && err.message === 'AUTH_REQUIRED') {
+        throw err;
+      }
+      // If running statically without Express API, allow local fallback
+      if (err instanceof TypeError) {
+        return null;
+      }
+      throw err;
     }
-    if (data.snapshot) {
-      this.applyServerSnapshot(data.snapshot);
-    }
-    return data as T;
   }
 
   public async adminSalvarProduto(
     dados: Partial<Produto> & { id?: string; prateleiras?: string[] },
     isNew = false
   ) {
-    const url = isNew || !dados.id
-      ? '/api/admin/products'
-      : `/api/admin/products/${encodeURIComponent(dados.id)}`;
+    const url =
+      isNew || !dados.id
+        ? '/api/admin/products'
+        : `/api/admin/products/${encodeURIComponent(dados.id)}`;
     const method = isNew || !dados.id ? 'POST' : 'PUT';
-    return this.adminRequest(url, {
+    const remote = await this.adminRequest(url, {
       method,
       body: JSON.stringify(dados),
     });
+    if (remote) return remote;
+    const produto = this.salvarProduto(dados);
+    return { produto };
   }
 
   public async adminExcluirProduto(id: string) {
-    return this.adminRequest(`/api/admin/products/${encodeURIComponent(id)}`, {
+    const remote = await this.adminRequest(`/api/admin/products/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
+    if (remote) return remote;
+    const ok = this.excluirProduto(id);
+    if (!ok) throw new Error('Medicamento não encontrado.');
+    return { ok: true };
   }
 
   public async adminSetProdutoPrateleiras(produtoId: string, prateleiras: string[]) {
-    return this.adminRequest(
+    const remote = await this.adminRequest(
       `/api/admin/products/${encodeURIComponent(produtoId)}/shelves`,
       {
         method: 'PUT',
         body: JSON.stringify({ prateleiras }),
       }
     );
+    if (remote) return remote;
+    const produto = this.setProdutoPrateleiras(produtoId, prateleiras);
+    if (!produto) throw new Error('Medicamento não encontrado.');
+    return { produto };
   }
 
   public async adminAddProdutoPrateleira(produtoId: string, prateleiraId: string) {
-    return this.adminRequest(
+    const remote = await this.adminRequest(
       `/api/admin/products/${encodeURIComponent(produtoId)}/shelves`,
       {
         method: 'POST',
         body: JSON.stringify({ prateleiraId }),
       }
     );
+    if (remote) return remote;
+    const produto = this.addProdutoPrateleira(produtoId, prateleiraId);
+    if (!produto) throw new Error('Medicamento não encontrado.');
+    return { produto };
   }
 
   public async adminRemoveProdutoPrateleira(produtoId: string, prateleiraId: string) {
-    return this.adminRequest(
+    const remote = await this.adminRequest(
       `/api/admin/products/${encodeURIComponent(produtoId)}/shelves/${encodeURIComponent(prateleiraId)}`,
       {
         method: 'DELETE',
       }
     );
+    if (remote) return remote;
+    const produto = this.removeProdutoPrateleira(produtoId, prateleiraId);
+    if (!produto) throw new Error('Medicamento não encontrado.');
+    return { produto };
   }
 
   public async adminUpdateFileiraFoto(letra: string, fotoUrl: string) {
-    return this.adminRequest(`/api/admin/rows/${encodeURIComponent(letra)}/photo`, {
+    const remote = await this.adminRequest(`/api/admin/rows/${encodeURIComponent(letra)}/photo`, {
       method: 'PUT',
       body: JSON.stringify({ fotoUrl }),
     });
+    if (remote) return remote;
+    const fileira = this.updateFileiraFoto(letra, fotoUrl);
+    if (!fileira) throw new Error('Fileira não encontrada.');
+    return { fileira };
   }
 
   public async adminImportarPlanilha(buffer: ArrayBuffer): Promise<{
@@ -1243,24 +1291,54 @@ class DatabaseService {
       binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
     }
     const fileBase64 = btoa(binary);
-    return this.adminRequest('/api/admin/import', {
+    const remote = await this.adminRequest<{
+      atualizados: number;
+      inseridos: number;
+      localizacoesImportadas: number;
+      erros: string[];
+    }>('/api/admin/import', {
       method: 'POST',
       body: JSON.stringify({ fileBase64 }),
     });
+    if (remote) return remote;
+    return this.importarPlanilha(buffer);
   }
 
   public async adminExportarPlanilha(): Promise<Blob> {
-    const res = await fetch('/api/admin/export', {
-      method: 'GET',
-      credentials: 'include',
-    });
-    if (res.status === 401) {
+    const token = await getCurrentFirebaseIdToken();
+    if (!token) {
       throw new Error('AUTH_REQUIRED');
     }
-    if (!res.ok) {
-      throw new Error('Falha ao exportar planilha administrativa.');
+
+    try {
+      const res = await fetch('/api/admin/export', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (res.status === 401) {
+        throw new Error('AUTH_REQUIRED');
+      }
+      const contentType = res.headers.get('content-type') || '';
+      if (
+        res.ok &&
+        contentType.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      ) {
+        return res.blob();
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === 'AUTH_REQUIRED') {
+        throw err;
+      }
     }
-    return res.blob();
+
+    const bytes = this.exportarPlanilha();
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    return new Blob([copy.buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
   }
 
   public async adminComplementarCatalogo(): Promise<{
@@ -1273,17 +1351,28 @@ class DatabaseService {
       pendentes: number;
     };
   }> {
-    return this.adminRequest('/api/admin/medications/complement', {
+    const remote = await this.adminRequest('/api/admin/medications/complement', {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    if (remote) return remote;
+
+    const list = Array.from(this.produtos.values());
+    const { produtos: updated, resumo } = complementarListaSemSobrescrever(list);
+    this.produtos.clear();
+    updated.forEach((p) => this.produtos.set(p.id, p));
+    this.persistAll();
+    return { ok: true, resumo };
   }
 
   public async adminResetBase() {
-    return this.adminRequest('/api/admin/reset', {
+    const remote = await this.adminRequest('/api/admin/reset', {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    if (remote) return remote;
+    this.seedInitialData();
+    return { ok: true };
   }
 }
 

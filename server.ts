@@ -4,16 +4,6 @@ import path from 'node:path';
 import express from 'express';
 import type { Request, Response } from 'express';
 import {
-  bootstrapEnvAdminIfNeeded,
-  isAdminConfigured,
-  setupInitialAdmin,
-  authenticateAdmin,
-  changeAdminCredentials,
-  createSession,
-  getActiveSessionFromRequest,
-  destroySessionByRequest,
-  setSessionCookie,
-  clearSessionCookie,
   requireAdminAuth,
   recordAudit,
   getAuditLogs,
@@ -27,114 +17,25 @@ async function startServer() {
 
   app.set('trust proxy', true);
 
-  // Initialize server store & optional env admin bootstrap
+  // Initialize server store
   serverStore.init();
-  bootstrapEnvAdminIfNeeded();
 
   // Security headers & block direct access to hidden files / .data
   app.use((req, res, next) => {
-    if (req.path.startsWith('/.data') || req.path.includes('/.git') || req.path.startsWith('/.env')) {
+    if (
+      req.path.startsWith('/.data') ||
+      req.path.includes('/.git') ||
+      req.path.startsWith('/.env')
+    ) {
       res.status(403).json({ error: 'Acesso proibido.' });
       return;
     }
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     next();
   });
 
   app.use(express.json({ limit: '20mb' }));
-
-  // ======================== AUTH ROUTES ========================
-
-  app.get('/api/auth/status', (req: Request, res: Response) => {
-    const configured = isAdminConfigured();
-    const session = getActiveSessionFromRequest(req, true);
-    if (session) {
-      setSessionCookie(req, res, session.id);
-      res.json({
-        configured,
-        authenticated: true,
-        username: session.username,
-        expiresAt: new Date(session.expiresAt).toISOString(),
-      });
-      return;
-    }
-    res.json({
-      configured,
-      authenticated: false,
-    });
-  });
-
-  app.post('/api/auth/setup', (req: Request, res: Response) => {
-    const { username, password } = (req.body || {}) as {
-      username?: string;
-      password?: string;
-    };
-
-    const result = setupInitialAdmin(username || '', password || '');
-    if (!result.ok || !result.username) {
-      res.status(isAdminConfigured() ? 403 : 400).json({
-        error: result.error || 'Não foi possível criar a conta administrativa.',
-      });
-      return;
-    }
-
-    const session = createSession(result.username, req.headers['user-agent']);
-    setSessionCookie(req, res, session.id);
-    res.status(201).json({
-      authenticated: true,
-      configured: true,
-      username: session.username,
-      expiresAt: new Date(session.expiresAt).toISOString(),
-    });
-  });
-
-  app.post('/api/auth/login', (req: Request, res: Response) => {
-    const { username, password } = (req.body || {}) as {
-      username?: string;
-      password?: string;
-    };
-
-    const authRes = authenticateAdmin(req, username || '', password || '');
-    if (!authRes.ok || !authRes.username) {
-      res.status(authRes.statusCode || 401).json({
-        error: authRes.error || 'Usuário ou senha inválidos.',
-      });
-      return;
-    }
-
-    const session = createSession(authRes.username, req.headers['user-agent']);
-    setSessionCookie(req, res, session.id);
-    res.json({
-      authenticated: true,
-      configured: true,
-      username: session.username,
-      expiresAt: new Date(session.expiresAt).toISOString(),
-    });
-  });
-
-  app.post('/api/auth/keepalive', (req: Request, res: Response) => {
-    const session = getActiveSessionFromRequest(req, true);
-    if (!session) {
-      res.status(401).json({ authenticated: false, error: 'Sessão expirada.' });
-      return;
-    }
-    setSessionCookie(req, res, session.id);
-    res.json({
-      authenticated: true,
-      username: session.username,
-      expiresAt: new Date(session.expiresAt).toISOString(),
-    });
-  });
-
-  app.post('/api/auth/logout', (req: Request, res: Response) => {
-    const username = destroySessionByRequest(req);
-    if (username) {
-      recordAudit('logout', username, 'Sessão administrativa encerrada pelo usuário.');
-    }
-    clearSessionCookie(req, res);
-    res.json({ authenticated: false });
-  });
 
   // ======================== PUBLIC CATALOG ROUTE ========================
 
@@ -150,38 +51,9 @@ async function startServer() {
   app.get('/api/admin/overview', (req: AuthenticatedRequest, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
-      username: req.adminSession?.username,
-      expiresAt: req.adminSession
-        ? new Date(req.adminSession.expiresAt).toISOString()
-        : undefined,
+      username: req.adminUser?.email || 'Administrador',
       stats: serverStore.getStats(),
       auditLogs: getAuditLogs(40),
-    });
-  });
-
-  app.post('/api/admin/account/credentials', (req: AuthenticatedRequest, res: Response) => {
-    const { currentPassword, newUsername, newPassword } = (req.body || {}) as {
-      currentPassword?: string;
-      newUsername?: string;
-      newPassword?: string;
-    };
-
-    const result = changeAdminCredentials(
-      currentPassword || '',
-      newUsername || '',
-      newPassword || '',
-      req.adminSession?.id
-    );
-
-    if (!result.ok || !result.username) {
-      res.status(400).json({ error: result.error || 'Erro ao atualizar credenciais.' });
-      return;
-    }
-
-    res.json({
-      ok: true,
-      username: result.username,
-      message: 'Credenciais atualizadas com sucesso.',
     });
   });
 
@@ -194,7 +66,7 @@ async function startServer() {
     const saved = serverStore.saveProduto(body);
     recordAudit(
       'product_save',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       `Cadastro/atualização do medicamento "${saved.nome}" (${saved.id}).`
     );
     res.json({ produto: saved, snapshot: serverStore.getSnapshot() });
@@ -206,7 +78,7 @@ async function startServer() {
     const saved = serverStore.saveProduto(body);
     recordAudit(
       'product_update',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       `Edição do medicamento "${saved.nome}" (${saved.id}).`
     );
     res.json({ produto: saved, snapshot: serverStore.getSnapshot() });
@@ -221,7 +93,7 @@ async function startServer() {
     }
     recordAudit(
       'product_delete',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       `Exclusão do medicamento ID ${id}.`
     );
     res.json({ ok: true, snapshot: serverStore.getSnapshot() });
@@ -237,7 +109,7 @@ async function startServer() {
     }
     recordAudit(
       'shelves_set',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       `Prateleiras de "${prod.nome}" definidas como [${prateleiras.join(', ') || 'nenhuma'}].`
     );
     res.json({ produto: prod, snapshot: serverStore.getSnapshot() });
@@ -257,7 +129,7 @@ async function startServer() {
     }
     recordAudit(
       'shelf_add',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       `Prateleira ${shelfId.toUpperCase()} associada a "${prod.nome}".`
     );
     res.json({ produto: prod, snapshot: serverStore.getSnapshot() });
@@ -274,7 +146,7 @@ async function startServer() {
       }
       recordAudit(
         'shelf_remove',
-        req.adminSession?.username || 'admin',
+        req.adminUser?.email || 'admin',
         `Prateleira ${shelfId.toUpperCase()} removida de "${prod.nome}".`
       );
       res.json({ produto: prod, snapshot: serverStore.getSnapshot() });
@@ -295,7 +167,7 @@ async function startServer() {
     }
     recordAudit(
       'row_photo_update',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       `Foto da Fileira ${updated.letra} atualizada.`
     );
     res.json({ fileira: updated, snapshot: serverStore.getSnapshot() });
@@ -316,7 +188,7 @@ async function startServer() {
     }
     recordAudit(
       'shelf_coords_update',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       `Coordenadas da prateleira ${updated.id} atualizadas.`
     );
     res.json({ prateleira: updated, snapshot: serverStore.getSnapshot() });
@@ -332,7 +204,7 @@ async function startServer() {
       const result = serverStore.importWorkbookBase64(base64);
       recordAudit(
         'catalog_import',
-        req.adminSession?.username || 'admin',
+        req.adminUser?.email || 'admin',
         `Planilha importada: ${result.inseridos} novos, ${result.atualizados} atualizados, ${result.localizacoesImportadas} localizações.`
       );
       res.json({ ...result, snapshot: serverStore.getSnapshot() });
@@ -348,7 +220,7 @@ async function startServer() {
     const filename = `catalogo_ultramed_atualizado_${new Date().toISOString().slice(0, 10)}.xlsx`;
     recordAudit(
       'catalog_export',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       `Exportação da planilha administrativa (${filename}).`
     );
     res.setHeader(
@@ -364,7 +236,7 @@ async function startServer() {
     const resumo = serverStore.complementarCatalogoSeguro();
     recordAudit(
       'catalog_complement',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       `Análise e complementação não destrutiva executada (${resumo.totalAnalisados} analisados: ${resumo.verificados} verificados, ${resumo.incompletos} incompletos, ${resumo.necessitaRevisao} revisão, ${resumo.pendentes} pendentes).`
     );
     res.json({ ok: true, resumo, snapshot: serverStore.getSnapshot() });
@@ -374,7 +246,7 @@ async function startServer() {
     serverStore.resetToSeed();
     recordAudit(
       'catalog_reset',
-      req.adminSession?.username || 'admin',
+      req.adminUser?.email || 'admin',
       'Banco de dados restaurado para a base padrão da Ultramed.'
     );
     res.json({ ok: true, snapshot: serverStore.getSnapshot() });

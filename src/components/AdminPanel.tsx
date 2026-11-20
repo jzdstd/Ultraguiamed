@@ -20,8 +20,6 @@ import {
   LogOut,
   KeyRound,
   History,
-  Eye,
-  EyeOff,
   Loader2,
   ClipboardCheck,
   Sparkles,
@@ -38,27 +36,24 @@ import {
 import { db, getCamposFaltantesAudit, NAO_VERIFICADO } from '../services/db';
 import {
   getAdminOverview,
-  updateAdminCredentials,
   type AdminAuditEntry,
 } from '../services/auth';
 
 interface AdminPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  adminUsername: string;
+  adminEmail: string;
   onLogout: () => void;
   onSessionExpired: () => void;
-  onUsernameChanged: (newUsername: string) => void;
   onRefreshData: () => void;
 }
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   isOpen,
   onClose,
-  adminUsername,
+  adminEmail,
   onLogout,
   onSessionExpired,
-  onUsernameChanged,
   onRefreshData,
 }) => {
   const [activeAdminTab, setActiveAdminTab] = useState<
@@ -106,26 +101,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Account & Security tab state
   const [auditLogs, setAuditLogs] = useState<AdminAuditEntry[]>([]);
+  const [backendAuditAvailable, setBackendAuditAvailable] = useState(true);
   const [loadingOverview, setLoadingOverview] = useState(false);
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newUsernameInput, setNewUsernameInput] = useState(adminUsername);
-  const [newPasswordInput, setNewPasswordInput] = useState('');
-  const [confirmNewPassword, setConfirmNewPassword] = useState('');
-  const [showSecPasswords, setShowSecPasswords] = useState(false);
-  const [secFeedback, setSecFeedback] = useState<{
-    msg: string;
-    isError?: boolean;
-  } | null>(null);
-
-  useEffect(() => {
-    setNewUsernameInput(adminUsername);
-  }, [adminUsername]);
 
   const loadAuditOverview = useCallback(async () => {
     setLoadingOverview(true);
     try {
       const overview = await getAdminOverview();
       setAuditLogs(overview.auditLogs || []);
+      setBackendAuditAvailable(overview.backendAvailable);
     } catch (err) {
       if (err instanceof Error && err.message === 'AUTH_REQUIRED') {
         onSessionExpired();
@@ -136,12 +120,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, [onSessionExpired]);
 
   useEffect(() => {
-    if (isOpen && activeAdminTab === 'seguranca') {
+    if (isOpen && adminEmail && activeAdminTab === 'seguranca') {
       loadAuditOverview();
     }
-  }, [isOpen, activeAdminTab, loadAuditOverview]);
+  }, [isOpen, adminEmail, activeAdminTab, loadAuditOverview]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !adminEmail) return null;
 
   const handleBackendError = (err: unknown, fallbackMsg: string) => {
     if (err instanceof Error && err.message === 'AUTH_REQUIRED') {
@@ -455,64 +439,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  const handleSaveCredentials = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSecFeedback(null);
-
-    if (!currentPassword) {
-      setSecFeedback({
-        msg: 'Informe sua senha atual para confirmar a alteração.',
-        isError: true,
-      });
-      return;
-    }
-
-    if (newPasswordInput && newPasswordInput.length < 6) {
-      setSecFeedback({
-        msg: 'A nova senha deve ter no mínimo 6 caracteres.',
-        isError: true,
-      });
-      return;
-    }
-
-    if (newPasswordInput !== confirmNewPassword) {
-      setSecFeedback({
-        msg: 'A confirmação da nova senha não confere.',
-        isError: true,
-      });
-      return;
-    }
-
-    setIsBusy(true);
-    try {
-      const res = await updateAdminCredentials({
-        currentPassword,
-        newUsername: newUsernameInput.trim(),
-        newPassword: newPasswordInput || undefined,
-      });
-      setCurrentPassword('');
-      setNewPasswordInput('');
-      setConfirmNewPassword('');
-      onUsernameChanged(res.username);
-      setSecFeedback({
-        msg: res.message || 'Credenciais atualizadas com sucesso!',
-        isError: false,
-      });
-      loadAuditOverview();
-    } catch (err) {
-      if (err instanceof Error && err.message === 'AUTH_REQUIRED') {
-        onSessionExpired();
-        return;
-      }
-      setSecFeedback({
-        msg: err instanceof Error ? err.message : 'Erro ao atualizar credenciais.',
-        isError: true,
-      });
-    } finally {
-      setIsBusy(false);
-    }
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-6 bg-black/70 backdrop-blur-sm overflow-hidden">
       <div className="relative w-full max-w-6xl h-[92vh] flex flex-col rounded-3xl bg-white dark:bg-[#0F1A2E] border border-slate-300 dark:border-slate-800 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -527,24 +453,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 Painel Administrativo — Farmácias Ultramed Popular
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                Sessão autenticada como <strong className="text-emerald-700 dark:text-emerald-400">{adminUsername}</strong> · Operações protegidas no servidor
+                Sessão autenticada como <strong className="text-emerald-700 dark:text-emerald-400">{adminEmail}</strong> · Firebase Authentication
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
             <button
+              type="button"
               onClick={onLogout}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-[#E30521] bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-900/60 transition-colors"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-[#E30521] bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-900/60 transition-colors cursor-pointer"
               title="Encerrar sessão administrativa"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>Sair da Conta</span>
+              <span>Sair</span>
             </button>
             <button
+              type="button"
               onClick={onClose}
               className="p-2 rounded-xl text-slate-500 hover:text-slate-700 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700"
-              title="Fechar painel (mantém sessão ativa)"
+              title="Fechar painel (mantém sessão ativa até fechar o navegador ou 30 min sem uso)"
             >
               <X className="w-5 h-5" />
             </button>
@@ -1565,19 +1493,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           {activeAdminTab === 'seguranca' && (
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                {/* Left: Update Username & Password */}
+                {/* Left: Firebase Session & Security Policy */}
                 <div className="lg:col-span-5 p-5 rounded-3xl bg-slate-50 dark:bg-[#132238] border border-slate-200 dark:border-slate-800 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-xl bg-[#14387F]/10 text-[#14387F] dark:text-blue-400">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="p-2 rounded-xl bg-[#14387F]/10 text-[#14387F] dark:text-blue-400 shrink-0">
                         <KeyRound className="w-5 h-5" />
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                          Alterar Usuário e Senha
+                          Conta Administrativa (Firebase)
                         </h3>
-                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                          Usuário atual: <strong>{adminUsername}</strong>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                          Conectado como: <strong>{adminEmail}</strong>
                         </p>
                       </div>
                     </div>
@@ -1585,101 +1513,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <button
                       type="button"
                       onClick={onLogout}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 dark:bg-red-950/40 text-[#E30521] text-xs font-bold hover:bg-red-100"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 dark:bg-red-950/40 text-[#E30521] text-xs font-bold hover:bg-red-100 shrink-0 cursor-pointer"
                     >
                       <LogOut className="w-3.5 h-3.5" />
                       <span>Sair</span>
                     </button>
                   </div>
 
-                  {secFeedback && (
-                    <div
-                      className={`p-3 rounded-xl border text-xs font-medium ${
-                        secFeedback.isError
-                          ? 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-[#E30521]'
-                          : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
-                      }`}
-                    >
-                      {secFeedback.msg}
-                    </div>
-                  )}
-
-                  <form onSubmit={handleSaveCredentials} className="space-y-3 text-xs">
-                    <div>
-                      <label className="block font-semibold mb-1">
-                        Senha Atual *
-                      </label>
-                      <div className="relative">
-                        <input
-                          type={showSecPasswords ? 'text' : 'password'}
-                          required
-                          value={currentPassword}
-                          onChange={(e) => setCurrentPassword(e.target.value)}
-                          className="w-full pl-3 pr-9 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-                          placeholder="Digite sua senha atual"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowSecPasswords((s) => !s)}
-                          className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
-                        >
-                          {showSecPasswords ? (
-                            <EyeOff className="w-4 h-4" />
-                          ) : (
-                            <Eye className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
+                  <div className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                    <div className="p-3 rounded-xl bg-white dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                      <p className="font-semibold text-slate-900 dark:text-white mb-1">
+                        Proteção de Conta
+                      </p>
+                      <p>
+                        O acesso administrativo é validado pelo Firebase Authentication. Novos administradores só podem ser criados manualmente no Console do Firebase (Authentication &gt; Users).
+                      </p>
                     </div>
 
-                    <div>
-                      <label className="block font-semibold mb-1">
-                        Nome de Usuário
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={newUsernameInput}
-                        onChange={(e) => setNewUsernameInput(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-                        placeholder="Novo usuário"
-                      />
+                    <div className="p-3 rounded-xl bg-white dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                      <p className="font-semibold text-slate-900 dark:text-white mb-1">
+                        Sessão Segura no Balcão
+                      </p>
+                      <ul className="list-disc list-inside space-y-1">
+                        <li>A sessão encerra automaticamente ao fechar o navegador.</li>
+                        <li>Desconexão automática após 30 minutos sem atividade.</li>
+                        <li>Para trocar sua senha, use &ldquo;Esqueci minha senha&rdquo; na tela de login ou o Console do Firebase.</li>
+                      </ul>
                     </div>
-
-                    <div>
-                      <label className="block font-semibold mb-1">
-                        Nova Senha (deixe em branco para manter a atual)
-                      </label>
-                      <input
-                        type={showSecPasswords ? 'text' : 'password'}
-                        value={newPasswordInput}
-                        onChange={(e) => setNewPasswordInput(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-                        placeholder="Mínimo 6 caracteres"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block font-semibold mb-1">
-                        Confirmar Nova Senha
-                      </label>
-                      <input
-                        type={showSecPasswords ? 'text' : 'password'}
-                        value={confirmNewPassword}
-                        onChange={(e) => setConfirmNewPassword(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-                        placeholder="Repita a nova senha"
-                      />
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={isBusy}
-                      className="w-full py-2.5 rounded-xl bg-[#14387F] hover:bg-[#0e295d] disabled:opacity-60 text-white font-bold transition-colors"
-                    >
-                      Salvar Credenciais
-                    </button>
-                  </form>
+                  </div>
                 </div>
 
                 {/* Right: Admin Activity Audit Log */}
@@ -1692,12 +1553,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           Registro de Auditoria Administrativa
                         </h3>
                         <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                          Acessos, alterações de senha e edições protegidas no servidor.
+                          Histórico de edições quando conectado ao servidor Node.
                         </p>
                       </div>
                     </div>
 
                     <button
+                      type="button"
                       onClick={loadAuditOverview}
                       className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-semibold hover:bg-slate-200 dark:hover:bg-slate-700"
                     >
@@ -1709,6 +1571,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <div className="py-10 flex items-center justify-center gap-2 text-xs text-slate-400">
                       <Loader2 className="w-4 h-4 animate-spin" />
                       <span>Carregando histórico protegido...</span>
+                    </div>
+                  ) : !backendAuditAvailable ? (
+                    <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700">
+                      Hospedagem estática ativa: a autenticação está protegida pelo Firebase Authentication e as alterações são salvas localmente neste navegador.
                     </div>
                   ) : auditLogs.length > 0 ? (
                     <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
@@ -1722,7 +1588,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               {log.details}
                             </div>
                             <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                              Usuário: <strong>{log.username}</strong> · Ação:{' '}
+                              Administrador: <strong>{log.username}</strong> · Ação:{' '}
                               <span className="font-mono">{log.action}</span>
                             </div>
                           </div>
