@@ -94,13 +94,15 @@ export default function App() {
       }
     });
 
-    const unsubscribeAuth = subscribeToAdminAuth((user) => {
+    const unsubscribeAuth = subscribeToAdminAuth(({ user, unauthorizedError }) => {
       if (!active) return;
       setAdminUser(user);
       setIsCheckingAuth(false);
       if (user) {
         lastActivityRef.current = Date.now();
         setInactivityMessage('');
+      } else if (unauthorizedError) {
+        setInactivityMessage(unauthorizedError);
       }
     });
 

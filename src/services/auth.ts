@@ -7,7 +7,8 @@ import {
   signOut,
   type User,
 } from 'firebase/auth';
-import { auth, isFirebaseConfigured } from './firebase';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, firestoreDb, isFirebaseConfigured } from './firebase';
 
 export const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos sem atividade
 
@@ -30,6 +31,14 @@ export interface AdminOverviewResponse {
   };
   auditLogs: AdminAuditEntry[];
   backendAvailable: boolean;
+}
+
+function getAllowedAdminEmailsFromEnv(): string[] {
+  const raw = import.meta.env.VITE_ADMIN_EMAILS || '';
+  return raw
+    .split(/[,;\s]+/)
+    .map((e: string) => e.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 function getFirebaseErrorCode(err: unknown): string {
@@ -62,14 +71,76 @@ function mapFirebaseLoginError(err: unknown): string {
   }
 }
 
+/**
+ * Verifica autorização explícita de administrador:
+ * 1) Custom claim no Firebase Auth (admin: true ou role: "admin")
+ * 2) Documento ativo na coleção Firestore admins/{uid}
+ * 3) Lista explícita de e-mails na variável VITE_ADMIN_EMAILS
+ */
+export async function verifyAdminAuthorization(user: User): Promise<boolean> {
+  try {
+    const tokenResult = await user.getIdTokenResult();
+    if (
+      tokenResult.claims.admin === true ||
+      tokenResult.claims.role === 'admin'
+    ) {
+      return true;
+    }
+  } catch {
+    // Segue para as demais verificações
+  }
+
+  const allowedEmails = getAllowedAdminEmailsFromEnv();
+  const userEmail = user.email?.trim().toLowerCase();
+  if (userEmail && allowedEmails.includes(userEmail)) {
+    return true;
+  }
+
+  if (firestoreDb) {
+    try {
+      const adminSnap = await getDoc(doc(firestoreDb, 'admins', user.uid));
+      if (adminSnap.exists()) {
+        const data = adminSnap.data();
+        if (data?.active !== false) {
+          return true;
+        }
+      }
+    } catch {
+      // Firestore ausente ou sem permissão de leitura para este UID -> negado
+    }
+  }
+
+  return false;
+}
+
 export function subscribeToAdminAuth(
-  callback: (user: User | null) => void
+  callback: (state: { user: User | null; unauthorizedError?: string }) => void
 ): () => void {
   if (!isFirebaseConfigured || !auth) {
-    callback(null);
+    callback({ user: null });
     return () => {};
   }
-  return onAuthStateChanged(auth, callback);
+
+  const firebaseAuth = auth;
+  return onAuthStateChanged(firebaseAuth, async (user) => {
+    if (!user) {
+      callback({ user: null });
+      return;
+    }
+
+    const isAuthorized = await verifyAdminAuthorization(user);
+    if (!isAuthorized) {
+      await signOut(firebaseAuth).catch(() => undefined);
+      callback({
+        user: null,
+        unauthorizedError:
+          'Acesso negado: esta conta não possui autorização de administrador.',
+      });
+      return;
+    }
+
+    callback({ user });
+  });
 }
 
 export async function loginAdminWithEmail(
@@ -90,13 +161,24 @@ export async function loginAdminWithEmail(
     throw new Error('E-mail ou senha incorretos');
   }
 
+  let user: User;
   try {
     await setPersistence(auth, browserSessionPersistence);
     const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-    return cred.user;
+    user = cred.user;
   } catch (err) {
     throw new Error(mapFirebaseLoginError(err));
   }
+
+  const isAuthorized = await verifyAdminAuthorization(user);
+  if (!isAuthorized) {
+    await signOut(auth).catch(() => undefined);
+    throw new Error(
+      'Acesso negado: esta conta não possui autorização de administrador.'
+    );
+  }
+
+  return user;
 }
 
 export async function sendAdminPasswordReset(email: string): Promise<string> {
@@ -127,7 +209,7 @@ export async function sendAdminPasswordReset(email: string): Promise<string> {
     if (code === 'auth/invalid-email') {
       throw new Error('Digite um e-mail válido para enviar a redefinição de senha.');
     }
-    // Never reveal if an email exists when user-not-found is returned
+    // Não revela se o e-mail existe quando auth/user-not-found ocorre
   }
 
   return 'Se este e-mail estiver cadastrado como administrador, você receberá um link para redefinir a senha.';
@@ -166,7 +248,7 @@ export async function getAdminOverview(): Promise<AdminOverviewResponse> {
       },
     });
 
-    if (res.status === 401) {
+    if (res.status === 401 || res.status === 403) {
       throw new Error('AUTH_REQUIRED');
     }
 

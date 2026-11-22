@@ -265,8 +265,31 @@ async function startServer() {
   if (isDev || !fs.existsSync(path.join(distDir, 'index.html'))) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: false },
+      server: { middlewareMode: true, hmr: false, ws: false },
       appType: 'spa',
+    });
+    app.get('/@vite/client', async (_req: Request, res: Response, next) => {
+      try {
+        const transformed = await vite.transformRequest('/@vite/client');
+        if (transformed?.code) {
+          const safeCode = transformed.code
+            .replace(
+              'transport.connect(createHMRHandler(handleMessage));',
+              '/* HMR WebSocket disabled */'
+            )
+            .replace(
+              /else\s+throw\s+new\s+SendBeforeConnectError\([^)]*\);/,
+              'else return;'
+            );
+          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-store');
+          res.send(safeCode);
+          return;
+        }
+      } catch {
+        // Fall through to standard Vite middleware
+      }
+      next();
     });
     app.use(vite.middlewares);
   } else {

@@ -11,6 +11,7 @@ const GOOGLE_CERTS_URL =
 export interface FirebaseAdminIdentity {
   uid: string;
   email: string;
+  isAuthorizedAdmin: boolean;
 }
 
 export interface AdminAuditEntry {
@@ -87,6 +88,45 @@ async function getGoogleFirebaseCerts(): Promise<Record<string, string>> {
   return certs;
 }
 
+function getAllowedAdminEmailsFromEnv(): string[] {
+  const raw =
+    process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || '';
+  return raw
+    .split(/[,;\s]+/)
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+async function checkFirestoreAdminDoc(
+  projectId: string,
+  uid: string,
+  idToken: string
+): Promise<boolean> {
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+      projectId
+    )}/databases/(default)/documents/admins/${encodeURIComponent(uid)}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+      },
+    });
+    if (!res.ok) return false;
+    const docData = (await res.json()) as {
+      fields?: {
+        active?: { booleanValue?: boolean };
+      };
+    };
+    if (docData.fields?.active?.booleanValue === false) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function verifyFirebaseIdToken(
   idToken: string
 ): Promise<FirebaseAdminIdentity | null> {
@@ -114,9 +154,10 @@ export async function verifyFirebaseIdToken(
       iss?: string;
       sub?: string;
       email?: string;
+      admin?: boolean;
+      role?: string;
       exp?: number;
       iat?: number;
-      auth_time?: number;
     }>(payloadB64);
 
     const nowSec = Math.floor(Date.now() / 1000);
@@ -150,9 +191,19 @@ export async function verifyFirebaseIdToken(
       return null;
     }
 
+    const hasAdminClaim = payload.admin === true || payload.role === 'admin';
+    const allowedEmails = getAllowedAdminEmailsFromEnv();
+    const emailLower = (payload.email || '').trim().toLowerCase();
+    const hasEnvEmail = Boolean(emailLower && allowedEmails.includes(emailLower));
+    const hasFirestoreDoc =
+      hasAdminClaim || hasEnvEmail
+        ? true
+        : await checkFirestoreAdminDoc(projectId, payload.sub, idToken);
+
     return {
       uid: payload.sub,
       email: payload.email || payload.sub,
+      isAuthorizedAdmin: hasAdminClaim || hasEnvEmail || hasFirestoreDoc,
     };
   } catch {
     return null;
@@ -197,6 +248,14 @@ export async function requireAdminAuth(
     res.status(401).json({
       error: 'Sessão inválida ou expirada. Faça login novamente.',
       code: 'UNAUTHORIZED',
+    });
+    return;
+  }
+
+  if (!verified.isAuthorizedAdmin) {
+    res.status(403).json({
+      error: 'Acesso negado. Esta conta não possui permissão de administrador.',
+      code: 'FORBIDDEN',
     });
     return;
   }

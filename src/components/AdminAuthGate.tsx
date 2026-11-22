@@ -189,7 +189,7 @@ export const AdminAuthGate: React.FC<AdminAuthGateProps> = ({
                       onChange={(e) => setEmail(e.target.value)}
                       disabled={isSubmitting || isSendingReset || !isFirebaseConfigured}
                       className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-hidden focus:border-[#14387F]"
-                      placeholder="admin@suaempresa.com"
+                      placeholder="seu-email@exemplo.com"
                     />
                   </div>
                 </div>

@@ -1523,10 +1523,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <div className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                     <div className="p-3 rounded-xl bg-white dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
                       <p className="font-semibold text-slate-900 dark:text-white mb-1">
-                        Proteção de Conta
+                        Proteção e Autorização Administrativa
                       </p>
                       <p>
-                        O acesso administrativo é validado pelo Firebase Authentication. Novos administradores só podem ser criados manualmente no Console do Firebase (Authentication &gt; Users).
+                        O acesso exige autenticação via Firebase Authentication e autorização explícita como administrador (coleção <code className="font-mono">admins/&#123;uid&#125;</code> no Firestore, Custom Claim ou lista <code className="font-mono">VITE_ADMIN_EMAILS</code>).
                       </p>
                     </div>
 

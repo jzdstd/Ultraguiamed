@@ -1170,7 +1170,7 @@ class DatabaseService {
           ...(options.headers || {}),
         },
       });
-      if (res.status === 401) {
+      if (res.status === 401 || res.status === 403) {
         throw new Error('AUTH_REQUIRED');
       }
       const contentType = res.headers.get('content-type') || '';
@@ -1317,7 +1317,7 @@ class DatabaseService {
           Authorization: `Bearer ${token}`,
         },
       });
-      if (res.status === 401) {
+      if (res.status === 401 || res.status === 403) {
         throw new Error('AUTH_REQUIRED');
       }
       const contentType = res.headers.get('content-type') || '';
